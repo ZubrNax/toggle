@@ -1,0 +1,35 @@
+name: Build exe
+
+on:
+  push:
+    branches: [main]
+    paths: ["gamma_toggle.py", ".github/workflows/build.yml"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install --upgrade pip pyinstaller pillow
+      - name: Build
+        run: python -m PyInstaller --onefile --noconsole --name gamma_toggle gamma_toggle.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gamma_toggle-exe
+          path: dist/gamma_toggle.exe
+      - name: Publish release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build
+          files: dist/gamma_toggle.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+permissions:
+  contents: write
