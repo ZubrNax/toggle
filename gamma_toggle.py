@@ -1757,10 +1757,9 @@ class App:
         return min(p[0], q[0]), min(p[1], q[1]), max(p[0], q[0]), max(p[1], q[1])
 
     def apply_geometry(self):
-        if self.expanded:
-            x1, y1, x2, y2 = self.rect(0, self.a_ext, -self.b_ext, self.b_ext)
-        else:
-            x1, y1, x2, y2 = self.rect(0, HR, -HR, HR)
+        # Окно всегда полного размера: пустое место прозрачно и пропускает клики. Раньше окно
+        # росло при наведении, и новый кусок на долю секунды был чёрным прямоугольником.
+        x1, y1, x2, y2 = self.rect(0, self.a_ext, -self.b_ext, self.b_ext)
         self.wx, self.wy = int(round(x1)), int(round(y1))
         w, h = int(round(x2 - x1)), int(round(y2 - y1))
         self.root.geometry(geo(w, h, self.wx, self.wy))
