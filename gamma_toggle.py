@@ -15,6 +15,7 @@
 Способ 2 (если драйвер/HDR не дают менять гамму): светлая полупрозрачная плёнка
           поверх этого монитора, через которую проходят клики мыши.
 """
+import atexit
 import base64
 import ctypes
 import io
@@ -22,6 +23,7 @@ import json
 import math
 import os
 import re
+import signal
 import sys
 import tempfile
 import threading
@@ -1492,7 +1494,9 @@ class MonitorTile(Tile):
     def gamma_off(self):
         hdc = self.dc()
         if hdc:
-            gdi32.SetDeviceGammaRamp(hdc, ctypes.byref(self.original))
+            # всегда возвращаем линейную таблицу (гамма 1.0), даже если при запуске гамма
+            # уже была повышена, например после аварийного закрытия прошлого экземпляра
+            gdi32.SetDeviceGammaRamp(hdc, ctypes.byref(make_ramp(1.0)))
             gdi32.DeleteDC(hdc)
 
     # --- способ 2: светлая плёнка. Возвращает подпись или None ---
@@ -1807,6 +1811,15 @@ class App:
         self.apply_geometry()
         root.update_idletasks()
         self.make_noactivate(root)
+
+        # на любом выходе (закрытие, Ctrl+C, завершение сессии, сбой скрипта) гамма вернётся к 1.0
+        root.protocol("WM_DELETE_WINDOW", self.on_close)
+        atexit.register(self.reset_gamma)
+        for name in ("SIGINT", "SIGTERM", "SIGBREAK"):
+            try:
+                signal.signal(getattr(signal, name), lambda *a: self.root.after(0, self.on_close))
+            except Exception:
+                pass
 
         self.menu = tk.Menu(root, tearoff=0)
         self.menu.add_command(label="Выход", command=self.on_close)
@@ -2389,11 +2402,18 @@ class App:
             pass
         self.root.after(2000, self.watch)
 
-    def on_close(self):
-        # при выходе всегда возвращаем всё как было
+    def reset_gamma(self):
+        """Гамма всех мониторов обратно к 1.0, плёнка убирается (безопасно вызывать много раз)."""
         for t in self.monitor_tiles:
-            if t.boosted:
-                t.restore()
+            try:
+                if t.boosted:
+                    t.restore()
+            except Exception:
+                pass
+
+    def on_close(self):
+        # при выходе гамма всегда возвращается к 1.0
+        self.reset_gamma()
         try:
             winmm.timeEndPeriod(1)
         except Exception:
