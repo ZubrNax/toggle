@@ -113,7 +113,7 @@ CROSSHAIRS = [("Крест", "cross", "#3CFF5A"),
 # Кнопка «Клавиши»: сочетания хранятся в этом файле рядом с программой
 KEYS_FILE = "gamma_panel_keys.json"
 LEVELS_FILE = "gamma_panel_levels.json"   # выбранная ползунком гамма для каждого монитора
-GAMMA_MIN, GAMMA_MAX = 1.0, 3.0
+GAMMA_MIN, GAMMA_MAX = 1.0, 2.0
 
 # Масштаб интерфейса под настройки Windows (100% = 1.0, 150% = 1.5 ...)
 try:
