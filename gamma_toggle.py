@@ -1590,10 +1590,27 @@ class MonitorTile(Tile):
                 if mm["x"] <= ax < mm["x"] + mm["w"] and mm["y"] <= ay < mm["y"] + mm["h"]:
                     m = mm
                     break
-            x = int(anchor[0] - w / 2)
-            y = int(anchor[2] + u(8))                      # сразу под кнопкой
-            if y + h > m["y"] + m["h"] - u(8):             # снизу нет места: показываем над кнопкой
-                y = int(anchor[1] - h - u(8))
+            # плашка ставится со стороны, куда смотрит веер: язычок слева - справа от кнопки,
+            # справа - слева, сверху - под кнопкой, снизу - над кнопкой
+            edge = anchor[3] if len(anchor) > 3 else "top"
+            cx_, cy_, r_, gap = anchor[0], ay, (anchor[2] - anchor[1]) / 2, u(10)
+            if edge == "left":
+                x, y = cx_ + r_ + gap, cy_ - h / 2
+                if x + w > m["x"] + m["w"] - 4:
+                    x = cx_ - r_ - gap - w
+            elif edge == "right":
+                x, y = cx_ - r_ - gap - w, cy_ - h / 2
+                if x < m["x"] + 4:
+                    x = cx_ + r_ + gap
+            elif edge == "bottom":
+                x, y = cx_ - w / 2, cy_ - r_ - gap - h
+                if y < m["y"] + 4:
+                    y = cy_ + r_ + gap
+            else:
+                x, y = cx_ - w / 2, cy_ + r_ + gap
+                if y + h > m["y"] + m["h"] - 8:
+                    y = cy_ - r_ - gap - h
+            x, y = int(x), int(y)
         else:
             x, y = m["x"] + (m["w"] - w) // 2, m["y"] + (m["h"] - h) // 2
         x = max(m["x"] + 4, min(x, m["x"] + m["w"] - w - 4))
@@ -2224,7 +2241,7 @@ class App:
             if isinstance(tile, MonitorTile):
                 cx, cy = self.button_center(self.tiles.index(tile))
                 rx, ry = self.canvas.winfo_rootx(), self.canvas.winfo_rooty()
-                tile.right_click((rx + cx, ry + cy - D / 2, ry + cy + D / 2))
+                tile.right_click((rx + cx, ry + cy - D / 2, ry + cy + D / 2, self.edge))
             else:
                 tile.right_click()
             return
