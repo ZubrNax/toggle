@@ -24,6 +24,7 @@ import os
 import re
 import sys
 import tempfile
+import threading
 import random
 import time
 import tkinter as tk
@@ -570,9 +571,13 @@ class FileTile(Tile):
         self.err_text = "Нет файла"
         self.float = None      # плавающее окно с картинкой
         self.reset()
+        root.after(800, self.start_loading)   # грузим картинку в фоне сразу после запуска
 
     def reset(self):
         """Сбросить загруженные кадры (после выбора нового файла)."""
+        self.gen = getattr(self, "gen", 0) + 1     # номер загрузки: устаревшие результаты отбрасываем
+        self.loading = False
+        self._pil = {}
         self.frames = None    # квадратные заготовки кадров (None - ещё не грузили, [] - не вышло)
         self.durs = []        # длительность каждого кадра, мс
         self.fi = 0           # номер текущего кадра
@@ -597,11 +602,17 @@ class FileTile(Tile):
             return base64.b64decode(PHOTO_B64)
         return None
 
-    # --- кадры и превью ---
-    def load(self):
-        if self.frames is not None:
+    # --- кадры и превью (грузятся в фоне, чтобы программа не подлагивала) ---
+    def start_loading(self):
+        """Запускает фоновую загрузку кадров, если ещё не запущена."""
+        if self.frames is not None or self.loading:
             return
-        self.frames, self.durs = [], []
+        self.loading = True
+        gen = self.gen
+        threading.Thread(target=self._load_worker, args=(gen,), daemon=True).start()
+
+    def _load_worker(self, gen):
+        frames, durs = [], []
         try:
             from PIL import Image, ImageOps, ImageSequence
             data = self.source_bytes()
@@ -610,19 +621,44 @@ class FileTile(Tile):
                 for i, fr in enumerate(ImageSequence.Iterator(img)):
                     if i >= MAX_FRAMES:
                         break
-                    self.frames.append(ImageOps.fit(flatten(fr, PANEL), (192, 192), Image.LANCZOS))
-                    self.durs.append(max(30, int(fr.info.get("duration", 100) or 100)))
+                    frames.append(ImageOps.fit(flatten(fr, PANEL), (192, 192), Image.LANCZOS))
+                    durs.append(max(30, int(fr.info.get("duration", 100) or 100)))
             else:
                 img = flatten(ImageOps.exif_transpose(img), PANEL)
-                self.frames.append(ImageOps.fit(img, (256, 256), Image.LANCZOS))
-                self.durs.append(1000)
+                frames.append(ImageOps.fit(img, (256, 256), Image.LANCZOS))
+                durs.append(1000)
+            # заранее готовим круглые превью нужного размера, чтобы первое раскрытие не тормозило
+            fin = int(2 * (D / 2 - u(1)))
+            pre = {}
+            for i, f in enumerate(frames):
+                pre[(fin, i)] = self._circle(f, fin)
         except Exception:
-            self.frames, self.durs = [], []
+            frames, durs, pre = [], [], {}
+        if gen == self.gen:                  # файл за это время не меняли
+            self._pil = pre
+            self.durs = durs
+            self.frames = frames             # последним: по нему остальной код видит, что всё готово
+            self.loading = False
+
+    @staticmethod
+    def _circle(frame, size):
+        """Круглое RGBA-превью кадра (PIL-картинка; создаётся в любом потоке)."""
+        from PIL import Image, ImageDraw
+        mask = Image.new("L", (size * 4, size * 4), 0)
+        ImageDraw.Draw(mask).ellipse((0, 0, size * 4 - 1, size * 4 - 1), fill=255)
+        mask = mask.resize((size, size), Image.LANCZOS)
+        img = frame.resize((size, size), Image.LANCZOS).convert("RGBA")
+        img.putalpha(mask)
+        return img
+
+    def load(self):
+        """Совместимость: запускает загрузку и не ждёт её."""
+        self.start_loading()
 
     @property
     def animated(self):
-        self.load()
-        return len(self.frames) > 1
+        self.start_loading()
+        return bool(self.frames) and len(self.frames) > 1
 
     def advance(self, now):
         """Переключает кадр гифки, когда подошло время."""
@@ -635,25 +671,22 @@ class FileTile(Tile):
             self.t_next = now + self.durs[self.fi] / 1000.0
 
     def thumb(self, size):
-        """Круглое превью текущего кадра нужного диаметра в пикселях или None, если показать нельзя.
-        Нужна библиотека Pillow: pip install pillow"""
+        """Круглое превью текущего кадра нужного диаметра в пикселях или None, если показать нельзя
+        (или кадры ещё грузятся). Нужна библиотека Pillow: pip install pillow"""
         if size < 8:
             return None
-        self.load()
+        self.start_loading()
         if not self.frames:
             return None
-        key = (size, self.fi)
+        size += size & 1                       # чётные размеры: меньше разных превью при анимации
+        key = (size, self.fi % len(self.frames))
         if key not in self._cache:
             try:
-                from PIL import Image, ImageDraw, ImageTk
-                mask = Image.new("L", (size * 4, size * 4), 0)
-                ImageDraw.Draw(mask).ellipse((0, 0, size * 4 - 1, size * 4 - 1), fill=255)
-                mask = mask.resize((size, size), Image.LANCZOS)
-                img = self.frames[self.fi].resize((size, size), Image.LANCZOS).convert("RGBA")
-                img.putalpha(mask)
+                from PIL import ImageTk
+                pil = self._pil.get(key) or self._circle(self.frames[key[1]], size)
                 if len(self._cache) > 800:
                     self._cache.clear()
-                self._cache[key] = ImageTk.PhotoImage(img)
+                self._cache[key] = ImageTk.PhotoImage(pil)
             except Exception:
                 self.frames = []
                 return None
