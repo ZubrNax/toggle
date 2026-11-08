@@ -1430,6 +1430,12 @@ class MonitorTile(Tile):
         w, h = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
         m = self.mon
         if anchor:
+            # плашка открывается на том мониторе, где сама кнопка (а не на мониторе плитки)
+            ax, ay = anchor[0], (anchor[1] + anchor[2]) / 2
+            for mm in list_monitors():
+                if mm["x"] <= ax < mm["x"] + mm["w"] and mm["y"] <= ay < mm["y"] + mm["h"]:
+                    m = mm
+                    break
             x = int(anchor[0] - w / 2)
             y = int(anchor[2] + u(8))                      # сразу под кнопкой
             if y + h > m["y"] + m["h"] - u(8):             # снизу нет места: показываем над кнопкой
@@ -1456,6 +1462,17 @@ class MonitorTile(Tile):
                 self.close_slider()
         except Exception:
             self.close_slider()
+
+    def slider_rect(self):
+        """Прямоугольник открытой плашки в координатах экрана или None."""
+        if self.dlg is None:
+            return None
+        try:
+            return (self.dlg.winfo_rootx(), self.dlg.winfo_rooty(),
+                    self.dlg.winfo_rootx() + self.dlg.winfo_width(),
+                    self.dlg.winfo_rooty() + self.dlg.winfo_height())
+        except Exception:
+            return None
 
     def close_slider(self):
         if self.dlg is not None:
@@ -1595,6 +1612,7 @@ class App:
         self.job = None
         self.mode = "docked"       # "docked" - у края, "drag" - тащим, "snap" - прилипает к краю
         self.expanded = False
+        self.pinned = self.suppressed = self.pinned_seen = self.hot_prev = False
         self.press = None
         self.snap = None
         self.ghost = None
@@ -1798,6 +1816,9 @@ class App:
             if want != self.expanded:
                 self.expanded = want
                 self.apply_geometry()
+            if self.e_target == 0.0:              # приложение прячется: плашки гаммы тоже закрываем
+                for t in self.monitor_tiles:
+                    t.close_slider()
         elif self.mode == "snap":
             sn = self.snap
             sn["p"] = min(1.0, sn["p"] + dt / 0.18)
@@ -2133,6 +2154,34 @@ class App:
             in_fan = (self.e > 0.02 and da >= -u(10)
                       and dxs * dxs + dys * dys <= (self.R + D / 2 + u(18)) ** 2)
             near = in_handle or in_fan
+            for t in self.monitor_tiles:          # мышь над плашкой гаммы: приложение не прячем
+                r = t.slider_rect()
+                if r and r[0] - u(20) <= mx <= r[2] + u(20) and r[1] - u(24) <= my <= r[3] + u(20):
+                    near = True
+
+            # горячая клавиша Alt+L: показать (держим открытым) / спрятать
+            down = (user32.GetAsyncKeyState(0x12) < 0 and user32.GetAsyncKeyState(0x4C) < 0)
+            if down and not self.hot_prev:
+                if self.e_target == 1.0 or self.pinned:
+                    self.pinned, self.suppressed = False, True
+                    self.last_inside = 0.0
+                else:
+                    self.pinned, self.suppressed, self.pinned_seen = True, False, False
+                self.enter_t = None
+            self.hot_prev = down
+            if self.suppressed:
+                if not near:
+                    self.suppressed = False       # мышь ушла: обычное поведение вернулось
+                near = False
+            if self.pinned:
+                if near:
+                    self.pinned_seen = True
+                elif self.pinned_seen:
+                    self.pinned = False           # мышь побывала рядом и ушла: закрываем как обычно
+                else:
+                    near = True
+                    self.last_inside = now
+                    self.enter_t = now - 1
 
             if near:
                 self.last_inside = now
