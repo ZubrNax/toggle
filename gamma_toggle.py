@@ -1386,54 +1386,84 @@ class MonitorTile(Tile):
                     pass
         self.kick()
 
-    # --- ПКМ: окно с ползунком гаммы ---
-    def right_click(self):
+    # --- ПКМ: всплывающий ползунок гаммы прямо под кнопкой ---
+    def right_click(self, anchor=None):
+        """anchor = (x центра кнопки, верх кнопки, низ кнопки) в координатах экрана."""
         if self.dlg is not None:
-            try:
-                self.dlg.lift()
-                self.dlg.focus_force()
-                return
-            except Exception:
-                self.dlg = None
+            self.close_slider()
+            return
         dlg = tk.Toplevel(self.root)
         self.dlg = dlg
-        dlg.title(f"Гамма · монитор {self.mon['num']}")
-        dlg.configure(bg=PANEL)
+        dlg.overrideredirect(True)
         dlg.attributes("-topmost", True)
-        dlg.resizable(False, False)
+        dlg.configure(bg=BORDER)
+        body = tk.Frame(dlg, bg=PANEL)
+        body.pack(padx=1, pady=1)
 
-        tk.Label(dlg, text=f"Гамма монитора {self.mon['num']}", bg=PANEL, fg=TEXT,
-                 font=(FONT, 11, "bold")).pack(anchor="w", padx=14, pady=(12, 2))
-        tk.Label(dlg, text="Обычная гамма 1.0. Меняется сразу, если кнопка включена; "
-                 "иначе применится при включении.", bg=PANEL, fg=MUTED, font=(FONT, 9),
-                 justify="left", wraplength=300).pack(anchor="w", padx=14, pady=(0, 6))
+        head = tk.Frame(body, bg=PANEL)
+        head.pack(fill="x", padx=12, pady=(10, 0))
+        tk.Label(head, text=f"Гамма · монитор {self.mon['num']}", bg=PANEL, fg=TEXT,
+                 font=(FONT, 10, "bold")).pack(side="left")
+        val = tk.Label(head, text=f"x{self.gamma:.1f}", bg=PANEL, fg=ACCENT, font=(FONT, 10, "bold"))
+        val.pack(side="right")
 
         var = tk.DoubleVar(value=self.gamma)
-        scale = tk.Scale(dlg, from_=GAMMA_MIN, to=GAMMA_MAX, resolution=0.1, orient="horizontal",
-                         variable=var, length=300, bg=PANEL, fg=TEXT, troughcolor=TILE_OFF,
-                         highlightthickness=0, activebackground=ACCENT, font=(FONT, 9),
-                         command=lambda v: self.set_level(v))
-        scale.pack(padx=14, pady=(0, 6))
 
-        def close():
-            self.dlg = None
-            dlg.destroy()
+        def on_move(v):
+            val.config(text=f"x{float(v):.1f}")
+            self.set_level(v)                # применяется сразу, без подтверждения
 
-        btns = tk.Frame(dlg, bg=PANEL)
-        btns.pack(fill="x", padx=14, pady=(2, 12))
-        tk.Button(btns, text="Готово", command=close, bg=ACCENT, fg=INK, relief="flat",
-                  font=(FONT, 9, "bold"), padx=14, pady=3).pack(side="right")
-        tk.Button(btns, text=f"Сбросить (x{GAMMA_TARGET:g})",
-                  command=lambda: (var.set(GAMMA_TARGET), self.set_level(GAMMA_TARGET)),
-                  bg=TILE_OFF, fg=TEXT, relief="flat", font=(FONT, 9), padx=12,
-                  pady=3).pack(side="right", padx=8)
-        dlg.protocol("WM_DELETE_WINDOW", close)
+        scale = tk.Scale(body, from_=GAMMA_MIN, to=GAMMA_MAX, resolution=0.1, orient="horizontal",
+                         variable=var, length=240, showvalue=False, bg=PANEL, fg=TEXT,
+                         troughcolor=TILE_OFF, highlightthickness=0, bd=0, activebackground=ACCENT,
+                         sliderrelief="flat", command=on_move)
+        scale.pack(padx=12, pady=(4, 2))
+
+        foot = tk.Frame(body, bg=PANEL)
+        foot.pack(fill="x", padx=12, pady=(0, 8))
+        reset = tk.Label(foot, text=f"сбросить до x{GAMMA_TARGET:g}", bg=PANEL, fg=MUTED,
+                         font=(FONT, 8), cursor="hand2")
+        reset.pack(side="left")
+        reset.bind("<Button-1>", lambda e: (var.set(GAMMA_TARGET), on_move(GAMMA_TARGET)))
 
         dlg.update_idletasks()
         w, h = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
         m = self.mon
-        dlg.geometry(geo(w, h, m["x"] + (m["w"] - w) // 2, m["y"] + (m["h"] - h) // 2))
+        if anchor:
+            x = int(anchor[0] - w / 2)
+            y = int(anchor[2] + u(8))                      # сразу под кнопкой
+            if y + h > m["y"] + m["h"] - u(8):             # снизу нет места: показываем над кнопкой
+                y = int(anchor[1] - h - u(8))
+        else:
+            x, y = m["x"] + (m["w"] - w) // 2, m["y"] + (m["h"] - h) // 2
+        x = max(m["x"] + 4, min(x, m["x"] + m["w"] - w - 4))
+        y = max(m["y"] + 4, min(y, m["y"] + m["h"] - h - 4))
+        dlg.geometry(geo(w, h, x, y))
+
+        # закрывается по Esc, по клику в другое место или повторным ПКМ по кнопке
+        dlg.bind("<Escape>", lambda e: self.close_slider())
+        dlg.bind("<FocusOut>", lambda e: dlg.after(120, self._check_focus))
         dlg.focus_force()
+        scale.focus_set()
+
+    def _check_focus(self):
+        dlg = self.dlg
+        if dlg is None:
+            return
+        try:
+            f = dlg.focus_displayof()
+            if f is None:
+                self.close_slider()
+        except Exception:
+            self.close_slider()
+
+    def close_slider(self):
+        if self.dlg is not None:
+            try:
+                self.dlg.destroy()
+            except Exception:
+                pass
+            self.dlg = None
 
     def overlay_off(self):
         if self.overlay is not None:
@@ -2005,7 +2035,12 @@ class App:
             return
         tile = self.hit(e.x, e.y)
         if tile is not None and hasattr(tile, "right_click"):
-            tile.right_click()
+            if isinstance(tile, MonitorTile):
+                cx, cy = self.button_center(self.tiles.index(tile))
+                rx, ry = self.canvas.winfo_rootx(), self.canvas.winfo_rooty()
+                tile.right_click((rx + cx, ry + cy - D / 2, ry + cy + D / 2))
+            else:
+                tile.right_click()
             return
         if self.on_handle(e.x, e.y):
             try:
