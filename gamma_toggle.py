@@ -1764,6 +1764,18 @@ class App:
         w, h = int(round(x2 - x1)), int(round(y2 - y1))
         self.root.geometry(geo(w, h, self.wx, self.wy))
 
+    def grow_hidden(self):
+        """Увеличивает окно, пока оно невидимо, и показывает после перерисовки: так новый кусок
+        окна не мелькает чёрным."""
+        try:
+            self.root.attributes("-alpha", 0.0)
+            self.apply_geometry()
+            self.root.update_idletasks()
+            self.draw()
+            self.root.update_idletasks()
+        finally:
+            self.root.attributes("-alpha", 1.0)
+
     def set_circle(self, cx, cy):
         """Окно-круг вокруг точки (когда язычок тащат или он прилипает)."""
         self.root.geometry(geo(2 * HR, 2 * HR, cx - HR, cy - HR))
@@ -1829,7 +1841,7 @@ class App:
                 self.snap = None
                 self.e = self.e_target = 0.0
                 self.expanded = False
-                self.apply_geometry()
+                self.grow_hidden()
 
         anim = False        # крутится ли гифка на раскрытой кнопке
         if self.mode == "docked" and self.expanded and self.e > 0.3:
@@ -2100,7 +2112,7 @@ class App:
         g.attributes("-transparentcolor", KEY)
         cv = tk.Canvas(g, bg=KEY, highlightthickness=0)
         cv.pack(fill="both", expand=True)
-        g.geometry("1x1+0+0")
+        g.geometry(geo(2 * HR + 4, 2 * HR + 4, -4000, -4000))   # сразу нужного размера, за экраном
         g.update_idletasks()
         self.make_noactivate(g, click_through=True)
         self.ghost, self.ghost_cv, self.ghost_key = g, cv, None
@@ -2114,20 +2126,17 @@ class App:
             return
         self.ghost_key = key
         hx, hy = self.edge_point(edge, pos, mon)
-        if edge == "left":
-            x1, y1, x2, y2 = hx, hy - HR, hx + HR, hy + HR
-        elif edge == "right":
-            x1, y1, x2, y2 = hx - HR, hy - HR, hx, hy + HR
-        elif edge == "top":
-            x1, y1, x2, y2 = hx - HR, hy, hx + HR, hy + HR
-        else:
-            x1, y1, x2, y2 = hx - HR, hy - HR, hx + HR, hy
-        self.ghost.geometry(geo(x2 - x1, y2 - y1, x1, y1))
+        side = 2 * HR + 4
         cv = self.ghost_cv
         cv.delete("all")
-        cx, cy = hx - x1, hy - y1
-        cv.create_oval(cx - HR, cy - HR, cx + HR, cy + HR, fill="", outline=ACCENT,
-                       width=2, dash=(4, 3))
+        # размер окна не меняется (только положение), иначе при смене края мигал чёрный прямоугольник;
+        # рисуем только ту половину круга, что внутри экрана
+        start = {"left": -90, "right": 90, "top": 180, "bottom": 0}[edge]
+        c0 = side // 2
+        cv.create_arc(c0 - HR, c0 - HR, c0 + HR, c0 + HR, start=start, extent=180, style="arc",
+                      outline=ACCENT, width=2, dash=(4, 3))
+        cv.update_idletasks()
+        self.ghost.geometry(geo(side, side, hx - c0, hy - c0))
 
     def end_drag(self, x, y):
         if self.ghost is not None:
