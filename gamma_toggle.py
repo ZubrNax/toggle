@@ -111,6 +111,8 @@ CROSSHAIRS = [("Крест", "cross", "#3CFF5A"),
 
 # Кнопка «Клавиши»: сочетания хранятся в этом файле рядом с программой
 KEYS_FILE = "gamma_panel_keys.json"
+LEVELS_FILE = "gamma_panel_levels.json"   # выбранная ползунком гамма для каждого монитора
+GAMMA_MIN, GAMMA_MAX = 1.0, 3.0
 
 # Масштаб интерфейса под настройки Windows (100% = 1.0, 150% = 1.5 ...)
 try:
@@ -1267,6 +1269,39 @@ class MonitorTile(Tile):
         self.overlay = None
         self.applied = None   # последняя применённая гамма-таблица
         self.applied_rb = None   # что вернул драйвер сразу после установки
+        self.gamma = self.load_level()   # желаемая гамма (ползунок: ПКМ по кнопке)
+        self.dlg = None
+
+    # --- выбранная гамма хранится рядом с программой ---
+    def load_level(self):
+        try:
+            with open(os.path.join(app_dir(), LEVELS_FILE), encoding="utf-8") as f:
+                v = float(json.load(f).get(self.mon["device"], GAMMA_TARGET))
+            return max(GAMMA_MIN, min(GAMMA_MAX, v))
+        except Exception:
+            return GAMMA_TARGET
+
+    def save_level(self):
+        path = os.path.join(app_dir(), LEVELS_FILE)
+        try:
+            try:
+                with open(path, encoding="utf-8") as f:
+                    d = json.load(f)
+            except Exception:
+                d = {}
+            d[self.mon["device"]] = round(self.gamma, 2)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(d, f)
+        except Exception:
+            pass
+
+    def candidates(self):
+        """Желаемая гамма, а если драйвер её не принимает, постепенно меньшие значения."""
+        out, g = [round(self.gamma, 2)], round(self.gamma, 2)
+        while g > 1.2:
+            g = round(max(1.2, g - 0.2), 2)
+            out.append(g)
+        return out
 
     @property
     def sub(self):
@@ -1289,7 +1324,7 @@ class MonitorTile(Tile):
                     self.original = buf
                 else:
                     self.original = make_ramp(1.0)  # линейная = стандартная
-            for g in GAMMA_CANDIDATES:
+            for g in self.candidates():
                 ramp = make_ramp(g)
                 if gdi32.SetDeviceGammaRamp(hdc, ctypes.byref(ramp)):
                     self.applied = ramp
@@ -1315,7 +1350,7 @@ class MonitorTile(Tile):
             win.configure(bg="white")
             win.geometry(geo(m["w"], m["h"], m["x"], m["y"]))
             win.attributes("-topmost", True)
-            win.attributes("-alpha", OVERLAY_ALPHA)
+            win.attributes("-alpha", self.overlay_alpha())
             win.update()
             # пропускаем клики сквозь плёнку
             hwnd = user32.GetAncestor(win.winfo_id(), 2) or win.winfo_id()
@@ -1329,6 +1364,76 @@ class MonitorTile(Tile):
         except Exception:
             self.overlay_off()
             return None
+
+    def overlay_alpha(self):
+        """Прозрачность запасной плёнки: при гамме x2 равна OVERLAY_ALPHA, дальше растёт линейно."""
+        return max(0.02, min(0.6, OVERLAY_ALPHA * (self.gamma - 1.0)))
+
+    def set_level(self, g):
+        """Меняет гамму ползунком: запоминает и, если режим включён, применяет сразу."""
+        self.gamma = max(GAMMA_MIN, min(GAMMA_MAX, round(float(g), 2)))
+        self.save_level()
+        if self.boosted:
+            if self.mode == "gamma":
+                label = self.gamma_on()
+                if label:
+                    self.label = label
+            elif self.mode == "overlay" and self.overlay is not None:
+                try:
+                    self.overlay.attributes("-alpha", self.overlay_alpha())
+                    self.label = "Запасной"
+                except Exception:
+                    pass
+        self.kick()
+
+    # --- ПКМ: окно с ползунком гаммы ---
+    def right_click(self):
+        if self.dlg is not None:
+            try:
+                self.dlg.lift()
+                self.dlg.focus_force()
+                return
+            except Exception:
+                self.dlg = None
+        dlg = tk.Toplevel(self.root)
+        self.dlg = dlg
+        dlg.title(f"Гамма · монитор {self.mon['num']}")
+        dlg.configure(bg=PANEL)
+        dlg.attributes("-topmost", True)
+        dlg.resizable(False, False)
+
+        tk.Label(dlg, text=f"Гамма монитора {self.mon['num']}", bg=PANEL, fg=TEXT,
+                 font=(FONT, 11, "bold")).pack(anchor="w", padx=14, pady=(12, 2))
+        tk.Label(dlg, text="Обычная гамма 1.0. Меняется сразу, если кнопка включена; "
+                 "иначе применится при включении.", bg=PANEL, fg=MUTED, font=(FONT, 9),
+                 justify="left", wraplength=300).pack(anchor="w", padx=14, pady=(0, 6))
+
+        var = tk.DoubleVar(value=self.gamma)
+        scale = tk.Scale(dlg, from_=GAMMA_MIN, to=GAMMA_MAX, resolution=0.1, orient="horizontal",
+                         variable=var, length=300, bg=PANEL, fg=TEXT, troughcolor=TILE_OFF,
+                         highlightthickness=0, activebackground=ACCENT, font=(FONT, 9),
+                         command=lambda v: self.set_level(v))
+        scale.pack(padx=14, pady=(0, 6))
+
+        def close():
+            self.dlg = None
+            dlg.destroy()
+
+        btns = tk.Frame(dlg, bg=PANEL)
+        btns.pack(fill="x", padx=14, pady=(2, 12))
+        tk.Button(btns, text="Готово", command=close, bg=ACCENT, fg=INK, relief="flat",
+                  font=(FONT, 9, "bold"), padx=14, pady=3).pack(side="right")
+        tk.Button(btns, text=f"Сбросить (x{GAMMA_TARGET:g})",
+                  command=lambda: (var.set(GAMMA_TARGET), self.set_level(GAMMA_TARGET)),
+                  bg=TILE_OFF, fg=TEXT, relief="flat", font=(FONT, 9), padx=12,
+                  pady=3).pack(side="right", padx=8)
+        dlg.protocol("WM_DELETE_WINDOW", close)
+
+        dlg.update_idletasks()
+        w, h = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
+        m = self.mon
+        dlg.geometry(geo(w, h, m["x"] + (m["w"] - w) // 2, m["y"] + (m["h"] - h) // 2))
+        dlg.focus_force()
 
     def overlay_off(self):
         if self.overlay is not None:
