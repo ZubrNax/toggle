@@ -612,6 +612,7 @@ class FileTile(Tile):
         self.err_text = "Нет файла"
         self.float = None      # плавающее окно с картинкой
         self.fexcl = False     # окно исключено из снимков экрана
+        self.on_open = None    # вызывается при открытии окна (HealthTile сбрасывает своё состояние)
         self.hair = 0          # цвет волос в окне: 0 - как есть, 1 - белый, 2 - жёлтый, 3 - красный
         self.reset()
         root.after(800, self.start_loading)   # грузим картинку в фоне сразу после запуска
@@ -814,6 +815,8 @@ class FileTile(Tile):
             lbl.pack()
             self.float, self.flabel = win, lbl
             self.hair = 0                      # всегда открываем со стандартным цветом волос
+            if self.on_open:
+                self.on_open()
             self.start_hair_prep()
             self._show_frame()
             win.update_idletasks()
@@ -1075,9 +1078,9 @@ HP_MIN_PIXELS = 3         # столько подходящих пикселей
 
 def classify_pixel(r, g, b):
     """Цвет пикселя значка: 'red', 'yellow', 'white' или None (фон и всё остальное)."""
-    if r >= 140 and g <= 0.45 * r and b <= 0.45 * r:
+    if r >= 170 and g <= 0.36 * r and b <= 0.36 * r:       # насыщенный красный (не коричневый фон)
         return "red"
-    if r >= 160 and g >= 125 and g >= 0.58 * r and b <= 0.6 * g:
+    if r >= 200 and g >= 160 and g >= 0.62 * r and b <= 0.5 * g:
         return "yellow"
     if min(r, g, b) >= 185 and max(r, g, b) - min(r, g, b) <= 45:
         return "white"
@@ -1121,9 +1124,12 @@ def grab_hp(x, y, rad):
         if mdc:
             _hg.DeleteDC(mdc)
         _hu.ReleaseDC(None, hdc)
-    for k in ("red", "yellow", "white"):     # красный и жёлтый важнее белого (он бывает на фоне)
-        if counts[k] >= HP_MIN_PIXELS:
-            return k, counts
+    # значок одного цвета, поэтому побеждает цвет с наибольшим числом пикселей; случайные пиксели
+    # фона (коричневые, светлые блики) не должны перебивать его
+    total = sum(counts.values())
+    best = max(counts, key=counts.get)
+    if counts[best] >= HP_MIN_PIXELS and counts[best] >= 0.6 * total:
+        return best, counts
     return None, counts
 
 
@@ -1143,6 +1149,7 @@ class HealthTile(Tile):
         self.rad = 7
         self.on = False          # слежение включено (запоминается; по умолчанию включено, когда точка задана)
         self.state = None        # последний распознанный цвет значка
+        self.cand, self.cand_n = None, 0
         self.token = 0
         self.dlg = None
         self.want_on = True
@@ -1206,6 +1213,11 @@ class HealthTile(Tile):
             self._poll(self.token)
         self.kick()
 
+    def reset_state(self):
+        """Девочку открыли заново (волосы стандартные): цвет значка нужно определить заново."""
+        self.state = None
+        self.cand, self.cand_n = None, 0
+
     def covered_by_girl(self):
         """Точка значка лежит под окном с девочкой?"""
         w = self.file_tile.float
@@ -1222,7 +1234,7 @@ class HealthTile(Tile):
             if self.state is not None:
                 self.state = None             # при следующем открытии цвет определится заново
                 self.kick()
-            self.root.after(400, lambda: self._poll(token))
+            self.root.after(300, lambda: self._poll(token))
             return
         if not self.file_tile.fexcl and self.covered_by_girl():
             self.root.after(400, lambda: self._poll(token))     # старая Windows: сквозь девочку не читаем
@@ -1231,7 +1243,15 @@ class HealthTile(Tile):
             k, counts = grab_hp(self.x, self.y, self.rad)
         except Exception:
             k, counts = None, {}
-        if k and k != self.state:
+        # цвет меняем только если он продержался два чтения подряд (защита от случайных всплесков)
+        if k is None or k == self.state:
+            self.cand, self.cand_n = None, 0
+        elif k == self.cand:
+            self.cand_n += 1
+        else:
+            self.cand, self.cand_n = k, 1
+        if k and k != self.state and self.cand_n >= 2:
+            self.cand, self.cand_n = None, 0
             self.state = k
             self.log(f"значок: {k} {counts}")
             self.file_tile.set_hair(HP_STATES[k][1])     # цвет волос в окне с девочкой
@@ -2239,6 +2259,7 @@ class App:
                                            KeysTile(root, prim_mon, self.kick)]
         # слежение за значком здоровья работает само, без кнопки в веере; настройка - Alt+H
         self.health = HealthTile(root, file_tile, self.kick)
+        file_tile.on_open = self.health.reset_state
         self.n = len(self.tiles)
         self.compute_fan()
 
