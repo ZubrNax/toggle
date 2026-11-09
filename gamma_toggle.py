@@ -762,7 +762,7 @@ class FileTile(Tile):
             sc = min(cap / max(w0, h0), max(1.0, 360.0 / max(w0, h0)))
             self.fsize = (max(40, int(w0 * sc)), max(40, int(h0 * sc)))
             self.fsrc, self.fdurs = frames, durs
-            self.fcache, self.fi_f = {}, 0
+            self.fcache, self.fi_f, self.fflip = {}, 0, False
             win = tk.Toplevel(self.root)
             win.overrideredirect(True)
             win.attributes("-topmost", True)
@@ -780,18 +780,42 @@ class FileTile(Tile):
             drag = {}
             def press(e):
                 drag["x"], drag["y"] = e.x_root - win.winfo_x(), e.y_root - win.winfo_y()
+                drag["mons"] = list_monitors()
             def move(e):
-                win.geometry(f"+{e.x_root - drag['x']}+{e.y_root - drag['y']}")
+                w_, h_ = win.winfo_width(), win.winfo_height()
+                nx, ny = e.x_root - drag["x"], e.y_root - drag["y"]
+                ccx, ccy = nx + w_ / 2, ny + h_ / 2
+                mons = drag.get("mons") or list_monitors()
+                m_ = next((mm for mm in mons if mm["x"] <= ccx < mm["x"] + mm["w"]
+                           and mm["y"] <= ccy < mm["y"] + mm["h"]), None)
+                if m_ is None:                  # центр вне мониторов: ближайший к курсору
+                    m_ = next((mm for mm in mons if mm["x"] <= e.x_root < mm["x"] + mm["w"]), mons[0])
+                snap = u(40)                    # прилипание к краям и углам монитора
+                if abs(nx - m_["x"]) < snap:
+                    nx = m_["x"]
+                elif abs(nx + w_ - (m_["x"] + m_["w"])) < snap:
+                    nx = m_["x"] + m_["w"] - w_
+                if abs(ny - m_["y"]) < snap:
+                    ny = m_["y"]
+                elif abs(ny + h_ - (m_["y"] + m_["h"])) < snap:
+                    ny = m_["y"] + m_["h"] - h_
+                win.geometry(geo(w_, h_, nx, ny))
+                flip = (nx + w_ / 2) < (m_["x"] + m_["w"] / 2)   # левая половина экрана: разворот
+                if flip != self.fflip:
+                    self.fflip = flip
+                    self._show_frame()
             def wheel(e):
                 k = 1.1 if e.delta > 0 else 1 / 1.1
                 nw = int(max(40, min(cap * 1.6, self.fsize[0] * k)))
                 self.fsize = (nw, max(40, int(self.fsize[1] * nw / max(1, self.fsize[0]))))
                 self.fcache.clear()
-                rx_, by_ = win.winfo_x() + win.winfo_width(), win.winfo_y() + win.winfo_height()
+                lx_, rx_ = win.winfo_x(), win.winfo_x() + win.winfo_width()
+                by_ = win.winfo_y() + win.winfo_height()
                 self._show_frame()
                 win.update_idletasks()
                 nw_, nh_ = win.winfo_reqwidth(), win.winfo_reqheight()
-                win.geometry(geo(nw_, nh_, rx_ - nw_, by_ - nh_))     # правый нижний угол остаётся на месте
+                # нижний край и ближайший к краю экрана бок остаются на месте
+                win.geometry(geo(nw_, nh_, lx_ if self.fflip else rx_ - nw_, by_ - nh_))
             for wd in (win, lbl):
                 wd.bind("<Button-1>", press)
                 wd.bind("<B1-Motion>", move)
@@ -810,11 +834,13 @@ class FileTile(Tile):
         if self.float is None:
             return
         from PIL import Image, ImageTk
-        k = (self.fsize, self.fi_f)
+        k = (self.fsize, self.fi_f, self.fflip)
         if k not in self.fcache:
             if len(self.fcache) > 60:
                 self.fcache.clear()
             fr = self.fsrc[self.fi_f].resize(self.fsize, Image.LANCZOS)
+            if self.fflip:                       # у левого края картинка смотрит в другую сторону
+                fr = fr.transpose(Image.FLIP_LEFT_RIGHT)
             mask = fr.split()[3].point(lambda v: 255 if v >= 128 else 0)    # чёткий край без каймы
             base = Image.new("RGB", self.fsize, KEY)
             base.paste(fr.convert("RGB"), (0, 0), mask)
