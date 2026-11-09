@@ -943,6 +943,20 @@ class FileTile(Tile):
         self.kick()
 
 
+class ExitTile(Tile):
+    """Красная кнопка выхода в конце веера: один клик закрывает программу и возвращает гамму 1.0."""
+    icon = "exit"
+    enabled = True
+
+    def __init__(self, root, on_exit):
+        super().__init__("Выход", "Закрыть программу")
+        self.root = root
+        self.on_exit = on_exit
+
+    def click(self):
+        self.root.after(30, self.on_exit)
+
+
 class CrosshairTile(Tile):
     """Прицел по центру основного монитора: ЛКМ включает/выключает, ПКМ меняет стиль.
     Окно прицела прозрачное для кликов: игра и другие программы работают как обычно."""
@@ -1815,7 +1829,8 @@ class App:
         prim_mon = next((m for m in self.mons if m["primary"]), self.mons[0])
         self.tiles = self.monitor_tiles + [FileTile(root, PHOTO_PATH, self.kick),
                                            CrosshairTile(root, prim_mon, self.kick),
-                                           KeysTile(root, prim_mon, self.kick)]
+                                           KeysTile(root, prim_mon, self.kick),
+                                           ExitTile(root, self.on_close)]
         self.n = len(self.tiles)
         self.compute_fan()
 
@@ -2134,6 +2149,8 @@ class App:
         g = lambda v: u(v) * sc
         hov = t is self.hover_tile and t.enabled
         base = mix(TILE_HOV if hov else TILE_OFF, ACCENT, t.t)
+        if t.icon == "exit":
+            base = mix(base, ERR, 0.6 if hov else 0.32)
         ring = ERR if t.error else mix(mix(BORDER, "#56627D", 1.0 if hov else 0.0), ACCENT, t.t)
 
         # тень и окантовка (тёмное кольцо скрывает неровный край на любых обоях)
@@ -2191,6 +2208,13 @@ class App:
                 c.create_line(cx + dx * g(5), cy + dy * g(5), cx + dx * g(13), cy + dy * g(13),
                               fill=body, width=w, capstyle="round")
             c.create_oval(cx - g(2), cy - g(2), cx + g(2), cy + g(2), fill=body, outline="")
+            return
+        if t.icon == "exit":
+            w = max(3, int(g(3)))
+            k = g(8)
+            col = mix("#F2B8B5", "#FFFFFF", 1.0 if hov else 0.0)
+            c.create_line(cx - k, cy - k, cx + k, cy + k, fill=col, width=w, capstyle="round")
+            c.create_line(cx - k, cy + k, cx + k, cy - k, fill=col, width=w, capstyle="round")
             return
         # иконка монитора: корпус, экран (светится при включении), подставка
         screen = mix("#151A25", "#FFF4CC", t.t)
