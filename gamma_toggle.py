@@ -1035,8 +1035,29 @@ _hg = ctypes.WinDLL("gdi32", use_last_error=True)       # аргументов �
 _hu.GetDC.restype = ctypes.c_void_p
 _hu.GetDC.argtypes = [ctypes.c_void_p]
 _hu.ReleaseDC.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-_hg.GetPixel.restype = wintypes.DWORD
-_hg.GetPixel.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+_hg.CreateCompatibleDC.restype = ctypes.c_void_p
+_hg.CreateCompatibleDC.argtypes = [ctypes.c_void_p]
+_hg.CreateCompatibleBitmap.restype = ctypes.c_void_p
+_hg.CreateCompatibleBitmap.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+_hg.SelectObject.restype = ctypes.c_void_p
+_hg.SelectObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+_hg.BitBlt.restype = wintypes.BOOL
+_hg.BitBlt.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                       ctypes.c_void_p, ctypes.c_int, ctypes.c_int, wintypes.DWORD]
+_hg.GetDIBits.restype = ctypes.c_int
+_hg.GetDIBits.argtypes = [ctypes.c_void_p, ctypes.c_void_p, wintypes.UINT, wintypes.UINT,
+                          ctypes.c_void_p, ctypes.c_void_p, wintypes.UINT]
+_hg.DeleteObject.argtypes = [ctypes.c_void_p]
+_hg.DeleteDC.argtypes = [ctypes.c_void_p]
+
+
+class _BIH(ctypes.Structure):
+    _fields_ = [("biSize", wintypes.DWORD), ("biWidth", ctypes.c_long), ("biHeight", ctypes.c_long),
+                ("biPlanes", wintypes.WORD), ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
+                ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", ctypes.c_long),
+                ("biYPelsPerMeter", ctypes.c_long), ("biClrUsed", wintypes.DWORD),
+                ("biClrImportant", wintypes.DWORD)]
+
 
 HP_STATES = {"white": ("белый", 0), "yellow": ("жёлтый", 2), "red": ("красный", 3)}   # название, цвет волос
 HP_MIN_PIXELS = 3         # столько подходящих пикселей нужно, чтобы считать цвет значка найденным
@@ -1054,22 +1075,41 @@ def classify_pixel(r, g, b):
 
 
 def grab_hp(x, y, rad):
-    """Смотрит квадрат вокруг точки (x, y) на экране. Возвращает (цвет или None, счётчики)."""
+    """Смотрит квадрат вокруг точки (x, y) на экране. Возвращает (цвет или None, счётчики).
+    Весь квадрат копируется одним вызовом BitBlt (быстро, около миллисекунды): раньше точки читались
+    по одной через GetPixel, и из-за этого программа подлагивала. Окна с прозрачностью (в том числе
+    сама девочка) в копию не попадают, так что программа не видит саму себя."""
     counts = {"red": 0, "yellow": 0, "white": 0}
+    size = 2 * rad + 1
     hdc = _hu.GetDC(None)
     if not hdc:
         return None, counts
+    mdc = bmp = old = None
     try:
-        step = 1 if rad <= 8 else 2
-        for dy in range(-rad, rad + 1, step):
-            for dx in range(-rad, rad + 1, step):
-                c = _hg.GetPixel(hdc, x + dx, y + dy)
-                if c == 0xFFFFFFFF:        # CLR_INVALID: точка вне экрана
-                    continue
-                k = classify_pixel(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF)
-                if k:
-                    counts[k] += 1
+        mdc = _hg.CreateCompatibleDC(hdc)
+        bmp = _hg.CreateCompatibleBitmap(hdc, size, size)
+        old = _hg.SelectObject(mdc, bmp)
+        if not _hg.BitBlt(mdc, 0, 0, size, size, hdc, x - rad, y - rad, 0x00CC0020):   # SRCCOPY
+            return None, counts
+        bih = _BIH()
+        bih.biSize = ctypes.sizeof(_BIH)
+        bih.biWidth, bih.biHeight = size, -size            # отрицательная высота: строки сверху вниз
+        bih.biPlanes, bih.biBitCount = 1, 32
+        buf = (ctypes.c_ubyte * (size * size * 4))()
+        if not _hg.GetDIBits(mdc, bmp, 0, size, buf, ctypes.byref(bih), 0):
+            return None, counts
+        data = bytes(buf)
+        for i in range(0, len(data), 4):
+            k = classify_pixel(data[i + 2], data[i + 1], data[i])      # BGRA
+            if k:
+                counts[k] += 1
     finally:
+        if mdc and old:
+            _hg.SelectObject(mdc, old)
+        if bmp:
+            _hg.DeleteObject(bmp)
+        if mdc:
+            _hg.DeleteDC(mdc)
         _hu.ReleaseDC(None, hdc)
     for k in ("red", "yellow", "white"):     # красный и жёлтый важнее белого (он бывает на фоне)
         if counts[k] >= HP_MIN_PIXELS:
@@ -1201,7 +1241,7 @@ class HealthTile(Tile):
         name = HP_STATES[k][0] if k else "значок не виден"
         self.toast(f"Значок здоровья: точка {self.x}, {self.y}\nСейчас: {name} "
                    f"(бел. {c['white']} · жёлт. {c['yellow']} · красн. {c['red']})\n"
-                   "Слежение включено. Alt+Shift+H: подробная настройка")
+                   "Слежение включено. Ctrl+Alt+H: подробная настройка")
         self.log(f"точка {self.x},{self.y}: {k} {c}")
         self.set_on(True)
 
@@ -1294,6 +1334,10 @@ class HealthTile(Tile):
         w, h = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
         m = list_monitors()[0]
         dlg.geometry(geo(w, h, m["x"] + (m["w"] - w) // 2, m["y"] + (m["h"] - h) // 3))
+        try:
+            raise_top(user32.GetAncestor(dlg.winfo_id(), 2) or dlg.winfo_id())   # поверх полноэкранной игры
+        except Exception:
+            pass
         refresh()
 
 
@@ -2761,11 +2805,14 @@ class App:
                 self.enter_t = None
             self.hot_prev = down
             hp_down = (user32.GetAsyncKeyState(0x12) < 0 and user32.GetAsyncKeyState(0x48) < 0)
-            if hp_down and not self.hp_prev:          # Alt+H: запомнить точку (Alt+Shift+H: окно настройки)
-                if user32.GetAsyncKeyState(0x10) < 0:
-                    self.health.right_click()
-                else:
-                    self.health.quick_capture()
+            if hp_down and not self.hp_prev:          # Alt+H: запомнить точку (Ctrl+Alt+H: окно настройки)
+                try:
+                    if user32.GetAsyncKeyState(0x11) < 0:
+                        self.health.right_click()
+                    else:
+                        self.health.quick_capture()
+                except Exception:
+                    pass
             self.hp_prev = hp_down
             if self.suppressed:
                 if not near:
