@@ -1092,15 +1092,20 @@ class HealthTile(Tile):
         self.kick = kick
         self.x = self.y = None
         self.rad = 7
-        self.on = False
+        self.on = False          # слежение включено (запоминается; по умолчанию включено, когда точка задана)
         self.state = None        # последний распознанный цвет значка
         self.token = 0
         self.dlg = None
+        self.want_on = True
         self.load()
+        if self.x is not None and self.want_on:
+            root.after(1200, lambda: self.set_on(True))     # само включается при запуске
 
     @property
     def sub(self):
         if self.on:
+            if self.file_tile.float is None:
+                return "Авто · ждёт окно с девочкой"
             return "Вкл · " + (HP_STATES[self.state][0] if self.state else "ищу значок")
         return "Выкл · ПКМ: настройка" if self.x is not None else "Нужна точка · ПКМ"
 
@@ -1115,13 +1120,14 @@ class HealthTile(Tile):
                 d = json.load(f)
             self.x, self.y = int(d["x"]), int(d["y"])
             self.rad = max(3, min(25, int(d.get("rad", 7))))
+            self.want_on = bool(d.get("on", True))
         except Exception:
             pass
 
     def save(self):
         try:
             with open(os.path.join(app_dir(), HP_FILE), "w", encoding="utf-8") as f:
-                json.dump({"x": self.x, "y": self.y, "rad": self.rad}, f)
+                json.dump({"x": self.x, "y": self.y, "rad": self.rad, "on": self.want_on}, f)
         except Exception:
             pass
 
@@ -1141,6 +1147,8 @@ class HealthTile(Tile):
 
     def set_on(self, on):
         self.on = on
+        self.want_on = on
+        self.save()
         self.boosted = on
         self.target = 1.0 if on else 0.0
         self.token += 1
@@ -1151,6 +1159,12 @@ class HealthTile(Tile):
 
     def _poll(self, token):
         if token != self.token or not self.on:
+            return
+        if self.file_tile.float is None:      # окна с девочкой нет - смотреть не на кого, экономим силы
+            if self.state is not None:
+                self.state = None             # при следующем открытии цвет определится заново
+                self.kick()
+            self.root.after(400, lambda: self._poll(token))
             return
         try:
             k, counts = grab_hp(self.x, self.y, self.rad)
@@ -1229,6 +1243,8 @@ class HealthTile(Tile):
                 return
             self.x, self.y = cursor_pos()
             self.save()
+            if not self.on:
+                self.set_on(True)                 # точка задана: слежение включается само
             btn_cap.config(text="Захватить (3 с)", state="normal")
             refresh_now()
 
