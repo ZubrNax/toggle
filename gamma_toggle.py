@@ -611,6 +611,7 @@ class FileTile(Tile):
         self.kick = kick
         self.err_text = "Нет файла"
         self.float = None      # плавающее окно с картинкой
+        self.fexcl = False     # окно исключено из снимков экрана
         self.hair = 0          # цвет волос в окне: 0 - как есть, 1 - белый, 2 - жёлтый, 3 - красный
         self.reset()
         root.after(800, self.start_loading)   # грузим картинку в фоне сразу после запуска
@@ -820,6 +821,13 @@ class FileTile(Tile):
             # сразу в правом нижнем углу монитора, вплотную к краям экрана
             win.geometry(geo(w, h, mon["x"] + mon["w"] - w, mon["y"] + mon["h"] - h))
             App.make_noactivate(win)
+            # окно с девочкой не попадает в снимки экрана (Windows 10 2004+): иначе слежение за значком
+            # здоровья «видело» бы саму девочку, когда она закрывает значок
+            try:
+                hw = user32.GetAncestor(win.winfo_id(), 2) or win.winfo_id()
+                self.fexcl = bool(_hu.SetWindowDisplayAffinity(hw, 0x11))   # WDA_EXCLUDEFROMCAPTURE
+            except Exception:
+                self.fexcl = False
             drag = {}
             def press(e):
                 drag["x"], drag["y"] = e.x_root - win.winfo_x(), e.y_root - win.winfo_y()
@@ -1032,6 +1040,8 @@ class FileTile(Tile):
 # ---------- здоровье в игре: цвет значка-плюсика на экране -> цвет волос ----------
 _hu = ctypes.WinDLL("user32", use_last_error=True)      # отдельные экземпляры, чтобы не менять типы
 _hg = ctypes.WinDLL("gdi32", use_last_error=True)       # аргументов у общих user32/gdi32
+_hu.SetWindowDisplayAffinity.argtypes = [ctypes.c_void_p, wintypes.DWORD]
+_hu.SetWindowDisplayAffinity.restype = wintypes.BOOL
 _hu.GetDC.restype = ctypes.c_void_p
 _hu.GetDC.argtypes = [ctypes.c_void_p]
 _hu.ReleaseDC.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
@@ -1196,6 +1206,15 @@ class HealthTile(Tile):
             self._poll(self.token)
         self.kick()
 
+    def covered_by_girl(self):
+        """Точка значка лежит под окном с девочкой?"""
+        w = self.file_tile.float
+        try:
+            return (w.winfo_rootx() - self.rad <= self.x <= w.winfo_rootx() + w.winfo_width() + self.rad and
+                    w.winfo_rooty() - self.rad <= self.y <= w.winfo_rooty() + w.winfo_height() + self.rad)
+        except Exception:
+            return False
+
     def _poll(self, token):
         if token != self.token or not self.on:
             return
@@ -1204,6 +1223,9 @@ class HealthTile(Tile):
                 self.state = None             # при следующем открытии цвет определится заново
                 self.kick()
             self.root.after(400, lambda: self._poll(token))
+            return
+        if not self.file_tile.fexcl and self.covered_by_girl():
+            self.root.after(400, lambda: self._poll(token))     # старая Windows: сквозь девочку не читаем
             return
         try:
             k, counts = grab_hp(self.x, self.y, self.rad)
