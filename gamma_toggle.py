@@ -743,6 +743,15 @@ class FileTile(Tile):
             else:
                 frames.append(ImageOps.exif_transpose(img).convert("RGBA"))
                 durs.append(1000)
+            # обрезаем пустые прозрачные поля, чтобы видимая часть картинки ложилась ровно в угол
+            box = None
+            for fr in frames:
+                bb = fr.split()[3].point(lambda v: 255 if v >= 128 else 0).getbbox()
+                if bb:
+                    box = bb if box is None else (min(box[0], bb[0]), min(box[1], bb[1]),
+                                                  max(box[2], bb[2]), max(box[3], bb[3]))
+            if box and box != (0, 0) + frames[0].size:
+                frames = [fr.crop(box) for fr in frames]
             x, y = cursor_pos()
             mon = next((m for m in list_monitors()
                         if m["x"] <= x < m["x"] + m["w"] and m["y"] <= y < m["y"] + m["h"]),
@@ -765,7 +774,8 @@ class FileTile(Tile):
             self._show_frame()
             win.update_idletasks()
             w, h = win.winfo_reqwidth(), win.winfo_reqheight()
-            win.geometry(geo(w, h, mon["x"] + (mon["w"] - w) // 2, mon["y"] + (mon["h"] - h) // 2))
+            # сразу в правом нижнем углу монитора, вплотную к краям экрана
+            win.geometry(geo(w, h, mon["x"] + mon["w"] - w, mon["y"] + mon["h"] - h))
             App.make_noactivate(win)
             drag = {}
             def press(e):
@@ -777,7 +787,11 @@ class FileTile(Tile):
                 nw = int(max(40, min(cap * 1.6, self.fsize[0] * k)))
                 self.fsize = (nw, max(40, int(self.fsize[1] * nw / max(1, self.fsize[0]))))
                 self.fcache.clear()
+                rx_, by_ = win.winfo_x() + win.winfo_width(), win.winfo_y() + win.winfo_height()
                 self._show_frame()
+                win.update_idletasks()
+                nw_, nh_ = win.winfo_reqwidth(), win.winfo_reqheight()
+                win.geometry(geo(nw_, nh_, rx_ - nw_, by_ - nh_))     # правый нижний угол остаётся на месте
             for wd in (win, lbl):
                 wd.bind("<Button-1>", press)
                 wd.bind("<B1-Motion>", move)
