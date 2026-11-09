@@ -560,6 +560,43 @@ def flatten(img, color_hex):
     return base.convert("RGB")
 
 
+def recolor_hair(img, mode):
+    """Меняет цвет волос (и ушей с хвостом: у лисички они одного цвета) у кадра RGBA.
+    mode: 0 - как есть, 1 - белый, 2 - жёлтый, 3 - красный. Работает по оттенку: красная одежда,
+    кожа и белый фон не затрагиваются."""
+    if mode == 0:
+        return img
+    from PIL import Image, ImageChops
+    a = img.split()[3]
+    rgb = img.convert("RGB")
+    h, s, v = rgb.convert("HSV").split()
+    def ramp(lo0, lo1, hi1, hi0):           # плавная «колокольная» маска: 0 -> 255 -> 0
+        out = []
+        for x in range(256):
+            if x < lo0 or x > hi0: out.append(0)
+            elif lo1 <= x <= hi1: out.append(255)
+            elif x < lo1: out.append(int(255 * (x - lo0) / (lo1 - lo0)))
+            else: out.append(int(255 * (hi0 - x) / (hi0 - hi1)))
+        return out
+    mh = h.point(ramp(11, 15, 31, 36))                      # золотисто-оранжевые оттенки волос
+    ms = s.point(ramp(60, 100, 255, 256))                   # только насыщенные (не кожа)
+    mv = v.point(ramp(40, 80, 255, 256))
+    mask = ImageChops.multiply(ImageChops.multiply(mh, ms), mv)
+    if mode == 1:      # белый
+        h2, s2, v2 = h, s.point(lambda x: int(x * 0.08)), v.point(lambda x: min(255, int(x * 1.05 + 28)))
+    elif mode == 2:    # жёлтый
+        h2, s2, v2 = h.point(lambda x: 35), s.point(lambda x: min(255, int(x * 1.05))), v.point(lambda x: min(255, int(x * 1.06 + 6)))
+    else:              # красный
+        h2, s2, v2 = h.point(lambda x: 2), s.point(lambda x: min(255, int(x * 1.15))), v.point(lambda x: int(x * 0.92))
+    new = Image.merge("HSV", (h2, s2, v2)).convert("RGB")
+    out = Image.composite(new, rgb, mask).convert("RGBA")
+    out.putalpha(a)
+    return out
+
+
+HAIR_NAMES = (("как есть", 0), ("белый", 1), ("жёлтый", 2), ("красный", 3))
+
+
 class FileTile(Tile):
     """Кнопка с фото или гифкой: ЛКМ открывает файл, ПКМ позволяет выбрать другой вместо текущего."""
     icon = "photo"
@@ -572,6 +609,7 @@ class FileTile(Tile):
         self.kick = kick
         self.err_text = "Нет файла"
         self.float = None      # плавающее окно с картинкой
+        self.hair = 0          # цвет волос в окне: 0 - как есть, 1 - белый, 2 - жёлтый, 3 - красный
         self.reset()
         root.after(800, self.start_loading)   # грузим картинку в фоне сразу после запуска
 
@@ -728,7 +766,7 @@ class FileTile(Tile):
 
     def open_float(self):
         """Окно без рамки и без панели задач: гифка играет, окно таскается мышью,
-        ПКМ по нему закрывает его, колесо мыши меняет размер. Возвращает False, если не вышло."""
+        ПКМ по нему меняет цвет волос, СКМ закрывает, колесо мыши меняет размер. Возвращает False, если не вышло."""
         try:
             from PIL import Image, ImageSequence, ImageOps
             data = self.source_bytes()
@@ -761,7 +799,8 @@ class FileTile(Tile):
             w0, h0 = frames[0].size
             sc = min(cap / max(w0, h0), max(1.0, 360.0 / max(w0, h0)))
             self.fsize = (max(40, int(w0 * sc)), max(40, int(h0 * sc)))
-            self.fsrc, self.fdurs = frames, durs
+            self.fbase, self.fsrc, self.fdurs = frames, frames, durs
+            self.fvar = {0: frames}
             self.fcache, self.fi_f, self.fflip = {}, 0, False
             win = tk.Toplevel(self.root)
             win.overrideredirect(True)
@@ -771,6 +810,8 @@ class FileTile(Tile):
             lbl = tk.Label(win, bd=0, highlightthickness=0, bg=KEY)
             lbl.pack()
             self.float, self.flabel = win, lbl
+            if self.hair:
+                self.set_hair(self.hair)
             self._show_frame()
             win.update_idletasks()
             w, h = win.winfo_reqwidth(), win.winfo_reqheight()
@@ -819,7 +860,8 @@ class FileTile(Tile):
             for wd in (win, lbl):
                 wd.bind("<Button-1>", press)
                 wd.bind("<B1-Motion>", move)
-                wd.bind("<Button-3>", lambda e: self.close_float())
+                wd.bind("<Button-3>", lambda e: self.next_hair())     # ПКМ: следующий цвет волос
+                wd.bind("<Button-2>", lambda e: self.close_float())   # СКМ: закрыть окно
                 wd.bind("<MouseWheel>", wheel)
             self.boosted, self.target = True, 1.0
             self.kick()
@@ -829,6 +871,37 @@ class FileTile(Tile):
         except Exception:
             self.close_float()
             return False
+
+    def next_hair(self):
+        """ПКМ по картинке: как есть -> белый -> жёлтый -> красный -> как есть."""
+        self.set_hair((self.hair + 1) % len(HAIR_NAMES))
+
+    def set_hair(self, mode):
+        """Перекрашивает волосы в окне. Тяжёлую работу делает фоновый поток, окно не подвисает."""
+        self.hair = mode
+        if self.float is None:
+            return
+        if mode in self.fvar:
+            self.fsrc = self.fvar[mode]
+            self.fcache.clear()
+            self._show_frame()
+            return
+        win, base = self.float, self.fbase
+
+        def work():
+            try:
+                res = [recolor_hair(f, mode) for f in base]
+            except Exception:
+                return
+            def apply():
+                if win is self.float:
+                    self.fvar[mode] = res
+                    if self.hair == mode:
+                        self.fsrc = res
+                        self.fcache.clear()
+                        self._show_frame()
+            self.root.after(0, apply)
+        threading.Thread(target=work, daemon=True).start()
 
     def _show_frame(self):
         if self.float is None:
