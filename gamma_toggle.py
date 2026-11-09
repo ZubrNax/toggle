@@ -858,7 +858,9 @@ class FileTile(Tile):
                 nw_, nh_ = win.winfo_reqwidth(), win.winfo_reqheight()
                 # нижний край и ближайший к краю экрана бок остаются на месте
                 win.geometry(geo(nw_, nh_, lx_ if self.fflip else rx_ - nw_, by_ - nh_))
-            for wd in (win, lbl):
+            # привязываем только к картинке (она занимает всё окно): иначе событие доходит и до самого
+            # окна, и каждый клик срабатывает дважды (цвет перескакивал через один, колесо давало двойной шаг)
+            for wd in (lbl,):
                 wd.bind("<Button-1>", press)
                 wd.bind("<B1-Motion>", move)
                 wd.bind("<Button-3>", lambda e: self.next_hair())     # ПКМ: следующий цвет волос
