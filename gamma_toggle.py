@@ -114,6 +114,8 @@ CROSSHAIRS = [("Крест", "cross", "#3CFF5A"),
 
 # Кнопка «Клавиши»: сочетания хранятся в этом файле рядом с программой
 KEYS_FILE = "gamma_panel_keys.json"
+HP_FILE = "gamma_panel_hp.json"            # точка на экране со значком здоровья
+HP_LOG = "gamma_hp_log.txt"
 LEVELS_FILE = "gamma_panel_levels.json"   # выбранная ползунком гамма для каждого монитора
 GAMMA_MIN, GAMMA_MAX = 1.0, 2.0
 
@@ -1028,6 +1030,229 @@ class FileTile(Tile):
         self.kick()
 
 
+# ---------- здоровье в игре: цвет значка-плюсика на экране -> цвет волос ----------
+_hu = ctypes.WinDLL("user32", use_last_error=True)      # отдельные экземпляры, чтобы не менять типы
+_hg = ctypes.WinDLL("gdi32", use_last_error=True)       # аргументов у общих user32/gdi32
+_hu.GetDC.restype = ctypes.c_void_p
+_hu.GetDC.argtypes = [ctypes.c_void_p]
+_hu.ReleaseDC.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+_hg.GetPixel.restype = wintypes.DWORD
+_hg.GetPixel.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+
+HP_STATES = {"white": ("белый", 0), "yellow": ("жёлтый", 2), "red": ("красный", 3)}   # название, цвет волос
+HP_MIN_PIXELS = 3         # столько подходящих пикселей нужно, чтобы считать цвет значка найденным
+
+
+def classify_pixel(r, g, b):
+    """Цвет пикселя значка: 'red', 'yellow', 'white' или None (фон и всё остальное)."""
+    if r >= 140 and g <= 0.45 * r and b <= 0.45 * r:
+        return "red"
+    if r >= 160 and g >= 125 and g >= 0.58 * r and b <= 0.6 * g:
+        return "yellow"
+    if min(r, g, b) >= 185 and max(r, g, b) - min(r, g, b) <= 45:
+        return "white"
+    return None
+
+
+def grab_hp(x, y, rad):
+    """Смотрит квадрат вокруг точки (x, y) на экране. Возвращает (цвет или None, счётчики)."""
+    counts = {"red": 0, "yellow": 0, "white": 0}
+    hdc = _hu.GetDC(None)
+    if not hdc:
+        return None, counts
+    try:
+        step = 1 if rad <= 8 else 2
+        for dy in range(-rad, rad + 1, step):
+            for dx in range(-rad, rad + 1, step):
+                c = _hg.GetPixel(hdc, x + dx, y + dy)
+                if c == 0xFFFFFFFF:        # CLR_INVALID: точка вне экрана
+                    continue
+                k = classify_pixel(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF)
+                if k:
+                    counts[k] += 1
+    finally:
+        _hu.ReleaseDC(None, hdc)
+    for k in ("red", "yellow", "white"):     # красный и жёлтый важнее белого (он бывает на фоне)
+        if counts[k] >= HP_MIN_PIXELS:
+            return k, counts
+    return None, counts
+
+
+class HealthTile(Tile):
+    """Следит за цветом значка здоровья (плюсик) в игре по пикселям экрана и красит волосы девочки:
+    белый плюсик - как есть, жёлтый - жёлтые волосы, красный - красные. Игру не трогает: только
+    читает цвет нескольких точек на экране, как программа записи экрана."""
+    icon = "health"
+    enabled = True
+
+    def __init__(self, root, file_tile, kick):
+        super().__init__("Здоровье", "Выкл · ПКМ: настройка")
+        self.root = root
+        self.file_tile = file_tile
+        self.kick = kick
+        self.x = self.y = None
+        self.rad = 7
+        self.on = False
+        self.state = None        # последний распознанный цвет значка
+        self.token = 0
+        self.dlg = None
+        self.load()
+
+    @property
+    def sub(self):
+        if self.on:
+            return "Вкл · " + (HP_STATES[self.state][0] if self.state else "ищу значок")
+        return "Выкл · ПКМ: настройка" if self.x is not None else "Нужна точка · ПКМ"
+
+    @property
+    def glyph_color(self):
+        return {"white": "#FFFFFF", "yellow": "#FFD43B", "red": "#FF4D4D"}.get(self.state) if self.on else None
+
+    # --- сохранение точки ---
+    def load(self):
+        try:
+            with open(os.path.join(app_dir(), HP_FILE), encoding="utf-8") as f:
+                d = json.load(f)
+            self.x, self.y = int(d["x"]), int(d["y"])
+            self.rad = max(3, min(25, int(d.get("rad", 7))))
+        except Exception:
+            pass
+
+    def save(self):
+        try:
+            with open(os.path.join(app_dir(), HP_FILE), "w", encoding="utf-8") as f:
+                json.dump({"x": self.x, "y": self.y, "rad": self.rad}, f)
+        except Exception:
+            pass
+
+    def log(self, text):
+        try:
+            with open(os.path.join(app_dir(), HP_LOG), "a", encoding="utf-8") as f:
+                f.write(time.strftime("%H:%M:%S ") + text + "\n")
+        except Exception:
+            pass
+
+    # --- включение / слежение ---
+    def click(self):
+        if self.x is None:
+            self.right_click()           # сначала нужно показать, где значок
+            return
+        self.set_on(not self.on)
+
+    def set_on(self, on):
+        self.on = on
+        self.boosted = on
+        self.target = 1.0 if on else 0.0
+        self.token += 1
+        if on:
+            self.state = None
+            self._poll(self.token)
+        self.kick()
+
+    def _poll(self, token):
+        if token != self.token or not self.on:
+            return
+        try:
+            k, counts = grab_hp(self.x, self.y, self.rad)
+        except Exception:
+            k, counts = None, {}
+        if k and k != self.state:
+            self.state = k
+            self.log(f"значок: {k} {counts}")
+            self.file_tile.set_hair(HP_STATES[k][1])     # цвет волос в окне с девочкой
+            self.kick()
+        self.root.after(400, lambda: self._poll(token))
+
+    # --- ПКМ: настройка точки ---
+    def right_click(self):
+        if self.dlg is not None:
+            try:
+                self.dlg.lift()
+                return
+            except Exception:
+                self.dlg = None
+        dlg = tk.Toplevel(self.root)
+        self.dlg = dlg
+        dlg.title("Здоровье: значок на экране")
+        dlg.configure(bg=PANEL)
+        dlg.attributes("-topmost", True)
+        dlg.resizable(False, False)
+        tk.Label(dlg, text="Цвет значка здоровья → цвет волос", bg=PANEL, fg=TEXT,
+                 font=(FONT, 11, "bold")).pack(anchor="w", padx=14, pady=(12, 2))
+        tk.Label(dlg, text="Нажми «Захватить» и за 3 секунды наведи курсор на плюсик здоровья в игре. "
+                 "Белый плюсик — волосы как есть, жёлтый — жёлтые, красный — красные.",
+                 bg=PANEL, fg=MUTED, font=(FONT, 9), justify="left", wraplength=340).pack(anchor="w", padx=14)
+        pos = tk.Label(dlg, bg=PANEL, fg=TEXT, font=(FONT, 10))
+        pos.pack(anchor="w", padx=14, pady=(8, 0))
+        live = tk.Label(dlg, bg=PANEL, fg=ACCENT, font=(FONT, 10, "bold"), justify="left")
+        live.pack(anchor="w", padx=14, pady=(2, 4))
+
+        row = tk.Frame(dlg, bg=PANEL)
+        row.pack(fill="x", padx=14, pady=(0, 4))
+        tk.Label(row, text="Размер области, пикс.:", bg=PANEL, fg=MUTED, font=(FONT, 9)).pack(side="left")
+        var_r = tk.IntVar(value=self.rad)
+        spin = tk.Spinbox(row, from_=3, to=25, width=4, textvariable=var_r, font=(FONT, 10),
+                          bg=TILE_OFF, fg=TEXT, buttonbackground=TILE_OFF, relief="flat",
+                          insertbackground=TEXT, command=lambda: apply_r())
+        spin.pack(side="left", padx=6)
+
+        def apply_r(*_):
+            try:
+                self.rad = max(3, min(25, int(var_r.get())))
+            except Exception:
+                return
+            self.save()
+
+        spin.bind("<KeyRelease>", apply_r)
+
+        def refresh():
+            if self.dlg is not dlg:
+                return
+            pos.config(text="Точка: не задана" if self.x is None else f"Точка: {self.x}, {self.y}")
+            if self.x is not None:
+                try:
+                    k, c = grab_hp(self.x, self.y, self.rad)
+                except Exception:
+                    k, c = None, {}
+                name = HP_STATES[k][0] if k else "не вижу значок"
+                live.config(text=f"Сейчас: {name}  (бел. {c.get('white', 0)} · жёлт. {c.get('yellow', 0)} · "
+                                 f"красн. {c.get('red', 0)})")
+            dlg.after(400, refresh)
+
+        btn_cap = tk.Button(dlg, text="Захватить (3 с)", bg=ACCENT, fg=INK, relief="flat",
+                            font=(FONT, 9, "bold"), padx=12, pady=4)
+
+        def capture(n=3):
+            if n > 0:
+                btn_cap.config(text=f"Наведи на плюсик… {n}", state="disabled")
+                dlg.after(1000, lambda: capture(n - 1))
+                return
+            self.x, self.y = cursor_pos()
+            self.save()
+            btn_cap.config(text="Захватить (3 с)", state="normal")
+            refresh_now()
+
+        def refresh_now():
+            pos.config(text=f"Точка: {self.x}, {self.y}")
+
+        btn_cap.config(command=capture)
+        btn_cap.pack(side="left", padx=14, pady=(2, 12))
+
+        def close():
+            apply_r()
+            self.dlg = None
+            dlg.destroy()
+
+        tk.Button(dlg, text="Готово", command=close, bg=TILE_OFF, fg=TEXT, relief="flat",
+                  font=(FONT, 9), padx=12, pady=4).pack(side="left", pady=(2, 12))
+        dlg.protocol("WM_DELETE_WINDOW", close)
+        dlg.update_idletasks()
+        w, h = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
+        m = list_monitors()[0]
+        dlg.geometry(geo(w, h, m["x"] + (m["w"] - w) // 2, m["y"] + (m["h"] - h) // 3))
+        refresh()
+
+
 class CrosshairTile(Tile):
     """Прицел по центру основного монитора: ЛКМ включает/выключает, ПКМ меняет стиль.
     Окно прицела прозрачное для кликов: игра и другие программы работают как обычно."""
@@ -1898,9 +2123,11 @@ class App:
                           "num": 1, "work": (0, 0, sw, sh)}]
         self.monitor_tiles = [MonitorTile(root, m, self.kick) for m in self.mons]
         prim_mon = next((m for m in self.mons if m["primary"]), self.mons[0])
-        self.tiles = self.monitor_tiles + [FileTile(root, PHOTO_PATH, self.kick),
+        file_tile = FileTile(root, PHOTO_PATH, self.kick)
+        self.tiles = self.monitor_tiles + [file_tile,
                                            CrosshairTile(root, prim_mon, self.kick),
-                                           KeysTile(root, prim_mon, self.kick)]
+                                           KeysTile(root, prim_mon, self.kick),
+                                           HealthTile(root, file_tile, self.kick)]
         self.n = len(self.tiles)
         self.compute_fan()
 
@@ -2274,6 +2501,13 @@ class App:
                 c.create_line(cx + dx * g(5), cy + dy * g(5), cx + dx * g(13), cy + dy * g(13),
                               fill=body, width=w, capstyle="round")
             c.create_oval(cx - g(2), cy - g(2), cx + g(2), cy + g(2), fill=body, outline="")
+            return
+        if t.icon == "health":
+            col = t.glyph_color or body
+            k = g(10)
+            w = max(4, int(g(6)))
+            c.create_line(cx - k, cy, cx + k, cy, fill=col, width=w, capstyle="round")
+            c.create_line(cx, cy - k, cx, cy + k, fill=col, width=w, capstyle="round")
             return
         # иконка монитора: корпус, экран (светится при включении), подставка
         screen = mix("#151A25", "#FFF4CC", t.t)
