@@ -1150,6 +1150,7 @@ class HealthTile(Tile):
         self.on = False          # слежение включено (запоминается; по умолчанию включено, когда точка задана)
         self.state = None        # последний распознанный цвет значка
         self.cand, self.cand_n = None, 0
+        self.none_n = 0
         self.token = 0
         self.dlg = None
         self.want_on = True
@@ -1243,6 +1244,14 @@ class HealthTile(Tile):
             k, counts = grab_hp(self.x, self.y, self.rad)
         except Exception:
             k, counts = None, {}
+        # значка нет на экране (игра закрыта, интерфейс скрыт): через ~3 секунды возвращаем стандартный цвет
+        self.none_n = self.none_n + 1 if k is None else 0
+        if self.none_n >= 10 and self.state is not None:
+            self.state = None
+            self.cand, self.cand_n = None, 0
+            self.log("значок не виден: стандартный цвет")
+            self.file_tile.set_hair(0)
+            self.kick()
         # цвет меняем только если он продержался два чтения подряд (защита от случайных всплесков)
         if k is None or k == self.state:
             self.cand, self.cand_n = None, 0
