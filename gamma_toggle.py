@@ -810,8 +810,9 @@ class FileTile(Tile):
             lbl = tk.Label(win, bd=0, highlightthickness=0, bg=KEY)
             lbl.pack()
             self.float, self.flabel = win, lbl
+            self.start_hair_prep()
             if self.hair:
-                self.set_hair(self.hair)
+                self.set_hair(self.hair)       # выбранный раньше цвет появится, как только будет готов
             self._show_frame()
             win.update_idletasks()
             w, h = win.winfo_reqwidth(), win.winfo_reqheight()
@@ -873,11 +874,37 @@ class FileTile(Tile):
             return False
 
     def next_hair(self):
-        """ПКМ по картинке: как есть -> белый -> жёлтый -> красный -> как есть."""
-        self.set_hair((self.hair + 1) % len(HAIR_NAMES))
+        """ПКМ по картинке: как есть -> белый -> жёлтый -> красный -> как есть.
+        Пока нужный цвет ещё готовится в фоне, лишние клики игнорируются, чтобы цвета не пропускались."""
+        nxt = (self.hair + 1) % len(HAIR_NAMES)
+        if self.hair not in self.fvar:
+            return
+        self.set_hair(nxt)
+
+    def start_hair_prep(self):
+        """Заранее готовит все цвета волос в фоновом потоке (по очереди), чтобы клики были мгновенными."""
+        win, base = self.float, self.fbase
+        def work():
+            for _, mode in HAIR_NAMES[1:]:
+                if win is not self.float:
+                    return
+                try:
+                    res = [recolor_hair(f, mode) for f in base]
+                except Exception:
+                    res = base
+                self.root.after(0, lambda m=mode, r=res: self._hair_ready(win, m, r))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _hair_ready(self, win, mode, res):
+        if win is not self.float:
+            return
+        self.fvar[mode] = res
+        if self.hair == mode:                  # этот цвет как раз ждали: показываем
+            self.fsrc = res
+            self.fcache.clear()
+            self._show_frame()
 
     def set_hair(self, mode):
-        """Перекрашивает волосы в окне. Тяжёлую работу делает фоновый поток, окно не подвисает."""
         self.hair = mode
         if self.float is None:
             return
@@ -885,23 +912,6 @@ class FileTile(Tile):
             self.fsrc = self.fvar[mode]
             self.fcache.clear()
             self._show_frame()
-            return
-        win, base = self.float, self.fbase
-
-        def work():
-            try:
-                res = [recolor_hair(f, mode) for f in base]
-            except Exception:
-                return
-            def apply():
-                if win is self.float:
-                    self.fvar[mode] = res
-                    if self.hair == mode:
-                        self.fsrc = res
-                        self.fcache.clear()
-                        self._show_frame()
-            self.root.after(0, apply)
-        threading.Thread(target=work, daemon=True).start()
 
     def _show_frame(self):
         if self.float is None:
