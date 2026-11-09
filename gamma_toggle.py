@@ -1241,7 +1241,7 @@ class HealthTile(Tile):
         name = HP_STATES[k][0] if k else "значок не виден"
         self.toast(f"Значок здоровья: точка {self.x}, {self.y}\nСейчас: {name} "
                    f"(бел. {c['white']} · жёлт. {c['yellow']} · красн. {c['red']})\n"
-                   "Слежение включено. Ctrl+Alt+H: подробная настройка")
+                   "Слежение включено. Alt+J: подробная настройка")
         self.log(f"точка {self.x},{self.y}: {k} {c}")
         self.set_on(True)
 
@@ -2228,7 +2228,7 @@ class App:
         self.job = None
         self.mode = "docked"       # "docked" - у края, "drag" - тащим, "snap" - прилипает к краю
         self.expanded = False
-        self.pinned = self.suppressed = self.pinned_seen = self.hot_prev = self.hp_prev = False
+        self.pinned = self.suppressed = self.pinned_seen = self.hot_prev = self.hp_prev = self.set_prev = False
         self.press = None
         self.snap = None
         self.ghost = None
@@ -2804,16 +2804,18 @@ class App:
                     self.pinned, self.suppressed, self.pinned_seen = True, False, False
                 self.enter_t = None
             self.hot_prev = down
-            hp_down = (user32.GetAsyncKeyState(0x12) < 0 and user32.GetAsyncKeyState(0x48) < 0)
-            if hp_down and not self.hp_prev:          # Alt+H: запомнить точку (Ctrl+Alt+H: окно настройки)
-                try:
-                    if user32.GetAsyncKeyState(0x11) < 0:
-                        self.health.right_click()
-                    else:
-                        self.health.quick_capture()
-                except Exception:
-                    pass
-            self.hp_prev = hp_down
+            alt = user32.GetAsyncKeyState(0x12) < 0
+            clean = user32.GetAsyncKeyState(0x11) >= 0 and user32.GetAsyncKeyState(0x10) >= 0   # без Ctrl и Shift
+            hp_down = alt and clean and user32.GetAsyncKeyState(0x48) < 0       # Alt+H: запомнить точку
+            set_down = alt and clean and user32.GetAsyncKeyState(0x4A) < 0      # Alt+J: окно настройки
+            try:
+                if hp_down and not self.hp_prev:
+                    self.health.quick_capture()
+                elif set_down and not self.set_prev:
+                    self.health.right_click()
+            except Exception:
+                pass
+            self.hp_prev, self.set_prev = hp_down, set_down
             if self.suppressed:
                 if not near:
                     self.suppressed = False       # мышь ушла: обычное поведение вернулось
