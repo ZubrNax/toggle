@@ -812,9 +812,8 @@ class FileTile(Tile):
             lbl = tk.Label(win, bd=0, highlightthickness=0, bg=KEY)
             lbl.pack()
             self.float, self.flabel = win, lbl
+            self.hair = 0                      # всегда открываем со стандартным цветом волос
             self.start_hair_prep()
-            if self.hair:
-                self.set_hair(self.hair)       # выбранный раньше цвет появится, как только будет готов
             self._show_frame()
             win.update_idletasks()
             w, h = win.winfo_reqwidth(), win.winfo_reqheight()
@@ -2142,8 +2141,9 @@ class App:
         file_tile = FileTile(root, PHOTO_PATH, self.kick)
         self.tiles = self.monitor_tiles + [file_tile,
                                            CrosshairTile(root, prim_mon, self.kick),
-                                           KeysTile(root, prim_mon, self.kick),
-                                           HealthTile(root, file_tile, self.kick)]
+                                           KeysTile(root, prim_mon, self.kick)]
+        # слежение за значком здоровья работает само, без кнопки в веере; настройка - Alt+H
+        self.health = HealthTile(root, file_tile, self.kick)
         self.n = len(self.tiles)
         self.compute_fan()
 
@@ -2155,7 +2155,7 @@ class App:
         self.job = None
         self.mode = "docked"       # "docked" - у края, "drag" - тащим, "snap" - прилипает к краю
         self.expanded = False
-        self.pinned = self.suppressed = self.pinned_seen = self.hot_prev = False
+        self.pinned = self.suppressed = self.pinned_seen = self.hot_prev = self.hp_prev = False
         self.press = None
         self.snap = None
         self.ghost = None
@@ -2731,6 +2731,10 @@ class App:
                     self.pinned, self.suppressed, self.pinned_seen = True, False, False
                 self.enter_t = None
             self.hot_prev = down
+            hp_down = (user32.GetAsyncKeyState(0x12) < 0 and user32.GetAsyncKeyState(0x48) < 0)
+            if hp_down and not self.hp_prev:          # Alt+H: настройка значка здоровья
+                self.health.right_click()
+            self.hp_prev = hp_down
             if self.suppressed:
                 if not near:
                     self.suppressed = False       # мышь ушла: обычное поведение вернулось
