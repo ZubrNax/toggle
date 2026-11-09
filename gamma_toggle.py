@@ -1176,6 +1176,35 @@ class HealthTile(Tile):
             self.kick()
         self.root.after(400, lambda: self._poll(token))
 
+    def toast(self, text, ms=2600):
+        """Короткая подсказка рядом с курсором (не забирает фокус у игры)."""
+        try:
+            x, y = cursor_pos()
+            win = tk.Toplevel(self.root)
+            win.overrideredirect(True)
+            win.attributes("-topmost", True)
+            win.configure(bg=ACCENT)
+            tk.Label(win, text=text, bg=PANEL, fg=TEXT, font=(FONT, 10, "bold"), padx=12, pady=7,
+                     justify="left").pack(padx=1, pady=1)
+            win.update_idletasks()
+            win.geometry(geo(win.winfo_reqwidth(), win.winfo_reqheight(), x + 24, y + 24))
+            App.make_noactivate(win)
+            win.after(ms, win.destroy)
+        except Exception:
+            pass
+
+    def quick_capture(self):
+        """Alt+H: запомнить точку под курсором как значок здоровья и сразу включить слежение."""
+        self.x, self.y = cursor_pos()
+        self.save()
+        k, c = grab_hp(self.x, self.y, self.rad)
+        name = HP_STATES[k][0] if k else "значок не виден"
+        self.toast(f"Значок здоровья: точка {self.x}, {self.y}\nСейчас: {name} "
+                   f"(бел. {c['white']} · жёлт. {c['yellow']} · красн. {c['red']})\n"
+                   "Слежение включено. Alt+Shift+H: подробная настройка")
+        self.log(f"точка {self.x},{self.y}: {k} {c}")
+        self.set_on(True)
+
     # --- ПКМ: настройка точки ---
     def right_click(self):
         if self.dlg is not None:
@@ -2732,8 +2761,11 @@ class App:
                 self.enter_t = None
             self.hot_prev = down
             hp_down = (user32.GetAsyncKeyState(0x12) < 0 and user32.GetAsyncKeyState(0x48) < 0)
-            if hp_down and not self.hp_prev:          # Alt+H: настройка значка здоровья
-                self.health.right_click()
+            if hp_down and not self.hp_prev:          # Alt+H: запомнить точку (Alt+Shift+H: окно настройки)
+                if user32.GetAsyncKeyState(0x10) < 0:
+                    self.health.right_click()
+                else:
+                    self.health.quick_capture()
             self.hp_prev = hp_down
             if self.suppressed:
                 if not near:
